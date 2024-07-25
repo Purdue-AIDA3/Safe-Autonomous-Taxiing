@@ -23,20 +23,16 @@ def get_p_arg(state_init, ref, k):
     p_arg_vec = ca.vertcat(state_init)
     for l in range(N):
         if k+l < len(ref):
-            ref_state = ref[k+l, :2]
-            if l == 0:
-                target_theta = np.arctan2(ref_state[1] - state_init[1], ref_state[0] - state_init[0])
-            else:
-                target_theta = np.arctan2(ref_state[1] - ref[k+l-1,1], ref_state[0] - ref[k+l-1,0])
+            ref_state = ref[k+l, :3]
             v_command = v_target 
         else:
-            ref_state = ref[-1, :2]
-            target_theta = np.arctan2(ref_state[1] - ref[-2,1], ref_state[0] - ref[-2,0])
+            ref_state = ref[-1, :3]
             v_command = 0
-        
-        target_state = ca.DM([ref_state[0], ref_state[1], target_theta, v_command*np.cos(target_theta), v_command*np.sin(target_theta), 0])
+
+        target_state = ca.DM([ref_state[0], ref_state[1], ref_state[2], v_command*np.cos(ref_state[2]), v_command*np.sin(ref_state[2]), 0])
         
         p_arg_vec = ca.vertcat(p_arg_vec, target_state)
+
     return p_arg_vec
 
 x = ca.SX.sym('x')

@@ -71,17 +71,24 @@ def gen_waypoints(control_points, r, num_turn_points):
 
     return waypoints
 
-def gen_linear_leg(p1, p2, v, dt, t_start):
+def gen_linear_leg(p1, p2, v, dt, t_start, last_theta):
     p1, p2 = np.array(p1), np.array(p2)
+    theta = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+    
+    if last_theta:
+        while theta < last_theta-np.pi: theta += 2*np.pi
+        while theta > last_theta+np.pi: theta -= 2*np.pi
+
     distance = np.sqrt(np.sum((p1-p2)**2))
     time = distance/v
     numpoints = max(2,int(time/dt))
 
     xs = np.linspace(p1[0], p2[0], numpoints)
     ys = np.linspace(p1[1], p2[1], numpoints)
+    thetas = np.ones(xs.shape)*theta
     ts = np.linspace(t_start, t_start+(numpoints-1)*dt, numpoints)
     
-    leg = np.vstack([xs, ys, ts]).T
+    leg = np.vstack([xs, ys, thetas, ts]).T
     return leg
 
 def gen_reference_trajectory(waypoints, v, dt):
@@ -89,11 +96,11 @@ def gen_reference_trajectory(waypoints, v, dt):
     trajectory = None
 
     for i in range(len(waypoints)-1):
-        leg = gen_linear_leg(waypoints[i], waypoints[i+1], v, dt, t_start)
-
         if i == 0:
+            leg = gen_linear_leg(waypoints[i], waypoints[i+1], v, dt, t_start, last_theta=None)
             trajectory = leg
         else:
+            leg = gen_linear_leg(waypoints[i], waypoints[i+1], v, dt, t_start, last_theta=trajectory[-1,2])
             trajectory = np.vstack([trajectory, leg[1:]])
         
         t_start = trajectory[-1,-1]

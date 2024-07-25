@@ -4,7 +4,7 @@ I0 = .2
 # setting matrix_weights' variables
 Q_x = 1000
 Q_y = 1000
-Q_theta = 1000
+Q_theta = 100000
 Q_vx = 1000
 Q_vy = 1000
 Q_omega = 1000
