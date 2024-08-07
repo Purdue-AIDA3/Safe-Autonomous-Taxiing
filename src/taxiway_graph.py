@@ -6,7 +6,7 @@ import math
 import pandas as pd
 
 class TaxiwayGraph:
-    def __init__(self, csv_file_path, image_path):
+    def __init__(self, csv_file_path, image_path=None):
         # Read data from CSV file
         self.data = pd.read_csv(csv_file_path)
         self.data.set_index('Name', inplace=True)
@@ -30,16 +30,17 @@ class TaxiwayGraph:
         self.ordered_pos_dict = {label: self.pos_dict[label] for label in self.vertices}
         
         # Load the airport map image
-        self.image_raw = mpimg.imread(image_path)  # Load the airport map image
-        self.image = np.flipud(self.image_raw)     # Flip the image for correct orientation
+        if image_path:
+            self.image_raw = mpimg.imread(image_path)  # Load the airport map image
+            self.image = np.flipud(self.image_raw)     # Flip the image for correct orientation
 
     def process_data(self):
         length = len(self.data)
 
         for i in range(length):
             name = self.data.index[i]
-            x_value = int(self.data.loc[name, 'Longitude (x)'])
-            y_value = int(self.data.loc[name, 'Latitude (y)'])
+            x_value = self.data.loc[name, 'Longitude (x)']
+            y_value = self.data.loc[name, 'Latitude (y)']
             self.pos.append((name, x_value, y_value))
             self.vertices.append(name)
 

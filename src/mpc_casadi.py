@@ -1,7 +1,6 @@
 import casadi as ca
 import numpy as np
  
-from .mpc_params import *
 from casadi import sin, cos
 
 def shift_timestep(step_horizon, t0, state_init, u, f):
@@ -19,7 +18,7 @@ def shift_timestep(step_horizon, t0, state_init, u, f):
 def DM2Arr(dm):
     return np.array(dm.full())
 
-def get_p_arg(state_init, ref, k):
+def get_p_arg(state_init, ref, v_target, k, N):
     p_arg_vec = ca.vertcat(state_init)
     for l in range(N):
         if k+l < len(ref):
@@ -35,123 +34,270 @@ def get_p_arg(state_init, ref, k):
 
     return p_arg_vec
 
-x = ca.SX.sym('x')
-y = ca.SX.sym('y')
-theta = ca.SX.sym('theta')
-vx = ca.SX.sym('vx')
-vy = ca.SX.sym('vy')
-omega = ca.SX.sym('omega')
+def h_obs(state, obstacle, r, alpha):
+    ox, oy = obstacle
+    return 2*(state[3]*(state[0] - ox) + state[4]*(state[1] - oy)) + alpha*((ox - state[0])**2 + (oy - state[1])**2 - r**2)
 
-states = ca.vertcat(x, y, theta, vx, vy, omega)
-n_states = states.numel()
-
-force = ca.SX.sym('force')
-tau = ca.SX.sym('tau')
-
-controls = ca.vertcat(force, tau)
-n_controls = controls.numel()
-
-# matrix containing all states over all time steps +1 (each column is a state vector)
-X = ca.SX.sym('X', n_states, N + 1)
-
-# matrix containing all control actions over all time steps (each column is an action vector)
-U = ca.SX.sym('U', n_controls, N)
-
-# coloumn vector for storing initial state and reference trajectory
-P = ca.SX.sym('P', n_states + N*n_states)
-
-# state weights matrix (Q_X, Q_Y, Q_THETA)
-Q = ca.diagcat(Q_x, Q_y, Q_theta, 
-               Q_vx, Q_vy, Q_omega)
-
-# controls weights matrix
-R = ca.diagcat(R1, R2)
-
-rot = ca.vertcat(
-    ca.horzcat(0,  0),
-    ca.horzcat(0,  0),
-    ca.horzcat(0,  0),
-    ca.horzcat(cos(theta)/mass, 0),
-    ca.horzcat(sin(theta)/mass,  0),
-    ca.horzcat(0,  1/I0)
-)
-
-drift = ca.vertcat(vx, vy, omega, 0, 0, 0)
-
-RHS = drift + rot @ controls
-
-f = ca.Function('f', [states, controls], [RHS])
-
-cost_fn = 0  # cost function
-g = X[:, 0] - P[:n_states]  # constraints in the equation
+def grad_h_obs(state, obstacle, alpha):
+    ox, oy = obstacle
+    return 2*ca.horzcat(state[3]+alpha*(state[0]-ox), state[4]+alpha*(state[1]-oy), 0, state[0] - ox, state[1] - oy, 0)
 
 
-# runge kutta
-for k in range(N):
-    st = X[:, k]
-    con = U[:, k]
-    cost_fn = cost_fn \
-        + (st - P[(k+1)*n_states:(k+2)*n_states]).T @ Q @ (st - P[(k+1)*n_states:(k+2)*n_states]) \
-        + con.T @ R @ con
-    st_next = X[:, k+1]
-    k1 = f(st, con)
-    k2 = f(st + dt/2*k1, con)
-    k3 = f(st + dt/2*k2, con)
-    k4 = f(st + dt * k3, con)
-    st_next_RK4 = st + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
-    g = ca.vertcat(g, st_next - st_next_RK4)
+
+class MPC_CBF:
+    def __init__(self, dt, v_target, 
+                 Q_params, R_params, 
+                 F_lims, tau_lims, v_lims, omega_lims, 
+                 N, mass, I0, r, alpha):
+        self.dt = dt
+        self.v_target = v_target
+
+        self.mass = mass
+        self.I0 = I0
+        self.N = N # MPC time window length
+        self.r = r # Safety radius
+        self.alpha = alpha # Class-K function parameter, must be positive
+        
+        self.F_lims = F_lims
+        self.tau_lims = tau_lims
+        self.v_lims = v_lims
+        self.omega_lims = omega_lims
+
+        x = ca.SX.sym('x')
+        y = ca.SX.sym('y')
+        theta = ca.SX.sym('theta')
+        vx = ca.SX.sym('vx')
+        vy = ca.SX.sym('vy')
+        omega = ca.SX.sym('omega')
+
+        states = ca.vertcat(x, y, theta, vx, vy, omega)
+        self.n_states = states.numel()
+        
+        force = ca.SX.sym('force')
+        tau = ca.SX.sym('tau')
+
+        controls = ca.vertcat(force, tau)
+        self.n_controls = controls.numel()
+        
+        # state weights matrix (Q_X, Q_Y, Q_THETA)
+        Q_x, Q_y, Q_theta, Q_vx, Q_vy, Q_omega = Q_params
+        self.Q = ca.diagcat(Q_x, Q_y, Q_theta, Q_vx, Q_vy, Q_omega)
+
+        # controls weights matrix
+        R_force, R_tau = R_params
+        self.R = ca.diagcat(R_force, R_tau)
+
+        rot = ca.vertcat(
+                ca.horzcat(0,  0),
+                ca.horzcat(0,  0),
+                ca.horzcat(0,  0),
+                ca.horzcat(cos(theta)/self.mass, 0),
+                ca.horzcat(sin(theta)/self.mass,  0),
+                ca.horzcat(0,  1/self.I0)
+            )
+        
+        drift = ca.vertcat(vx, vy, omega, 0, 0, 0)
+
+        RHS = drift + rot @ controls
+
+        self.f = ca.Function('f', [states, controls], [RHS])
+
+        self.opts = {
+            'ipopt': {
+                'max_iter': 2000,
+                'print_level': 0,
+                'acceptable_tol': 1e-8,
+                'acceptable_obj_change_tol': 1e-6
+            },
+            'print_time': 0
+        }
+
+        ################################################################################
+        ######### DEFINE DEFAULT SOLVER WHEN NO OBSTACLE IS DETECTED ###################
+
+        # matrix containing all states over all time steps +1 (each column is a state vector)
+        X = ca.SX.sym('X', self.n_states, self.N + 1)
+
+        # matrix containing all control actions over all time steps (each column is an action vector)
+        U = ca.SX.sym('U', self.n_controls, self.N)
+
+        OPT_variables = ca.vertcat(
+            X.reshape((-1, 1)),   # Example: 3x11 ---> 33x1 where 3=states, 11=N+1
+            U.reshape((-1, 1))
+        )
+
+        # coloumn vector for storing initial state and reference trajectory
+        P = ca.SX.sym('P', self.n_states + self.N*self.n_states)
+        
+        cost_fn = 0  # cost function
+        g = X[:, 0] - P[:self.n_states]  # constraints in the equation
+
+        
+        n = self.n_states
+        for k in range(self.N):
+            st = X[:, k]
+            con = U[:, k]
+            ref_k = P[(k+1)*n:(k+2)*n]
+            cost_fn = cost_fn \
+                + (st - ref_k).T @ self.Q @ (st - ref_k) \
+                + con.T @ self.R @ con
+            st_next = X[:, k+1]
+            k1 = self.f(st, con)
+            k2 = self.f(st + dt/2*k1, con)
+            k3 = self.f(st + dt/2*k2, con)
+            k4 = self.f(st + dt * k3, con)
+            st_next_RK4 = st + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+            g = ca.vertcat(g, st_next - st_next_RK4)
 
 
-OPT_variables = ca.vertcat(
-    X.reshape((-1, 1)),   # Example: 3x11 ---> 33x1 where 3=states, 11=N+1
-    U.reshape((-1, 1))
-)
-nlp_prob = {
-    'f': cost_fn,
-    'x': OPT_variables,
-    'g': g,
-    'p': P
-}
+        nlp_prob = {
+            'f': cost_fn,
+            'x': OPT_variables,
+            'g': g,
+            'p': P
+        }
 
-opts = {
-    'ipopt': {
-        'max_iter': 2000,
-        'print_level': 0,
-        'acceptable_tol': 1e-8,
-        'acceptable_obj_change_tol': 1e-6
-    },
-    'print_time': 0
-}
+        self.solver_no_obs = ca.nlpsol('solver', 'ipopt', nlp_prob, self.opts)
 
-solver = ca.nlpsol('solver', 'ipopt', nlp_prob, opts)
+        F_min, F_max = F_lims
+        tau_min, tau_max = tau_lims
 
-lbx = ca.DM.zeros((n_states*(N+1) + n_controls*N, 1))
-ubx = ca.DM.zeros((n_states*(N+1) + n_controls*N, 1))
+        v_min, v_max = v_lims
+        omega_min, omega_max = omega_lims
 
-lbx[0: n_states*(N+1): n_states] = -ca.inf     # X lower bound
-lbx[1: n_states*(N+1): n_states] = -ca.inf     # Y lower bound
-lbx[2: n_states*(N+1): n_states] = -ca.inf     # theta lower bound
-lbx[3: n_states*(N+1): n_states] = vx_min     # VX lower bound
-lbx[4: n_states*(N+1): n_states] = vy_min     # VY lower bound
-lbx[5: n_states*(N+1): n_states] = omega_min     # omega lower bound
+        self.lbx = ca.DM.zeros((self.n_states*(self.N+1) + self.n_controls*self.N, 1))
+        self.ubx = ca.DM.zeros((self.n_states*(self.N+1) + self.n_controls*self.N, 1))
 
-ubx[0: n_states*(N+1): n_states] = ca.inf      # X upper bound
-ubx[1: n_states*(N+1): n_states] = ca.inf      # Y upper bound
-ubx[2: n_states*(N+1): n_states] = ca.inf      # theta upper bound
-ubx[3: n_states*(N+1): n_states] = vx_max     # VX upper bound
-ubx[4: n_states*(N+1): n_states] = vy_max      # VY upper bound
-ubx[5: n_states*(N+1): n_states] = omega_max      # omega upper bound
+        self.lbx[0: self.n_states*(self.N+1): self.n_states] = -ca.inf     # X lower bound
+        self.lbx[1: self.n_states*(self.N+1): self.n_states] = -ca.inf     # Y lower bound
+        self.lbx[2: self.n_states*(self.N+1): self.n_states] = -ca.inf     # theta lower bound
+        self.lbx[3: self.n_states*(self.N+1): self.n_states] = v_min       # VX lower bound
+        self.lbx[4: self.n_states*(self.N+1): self.n_states] = v_min       # VY lower bound
+        self.lbx[5: self.n_states*(self.N+1): self.n_states] = omega_min   # omega lower bound
 
-lbx[n_states*(N+1)::2] = F_min                 # force lower bound
-lbx[n_states*(N+1)+1::2] = tau_min             # tau lower bound 
+        self.ubx[0: self.n_states*(self.N+1): self.n_states] = ca.inf      # X upper bound
+        self.ubx[1: self.n_states*(self.N+1): self.n_states] = ca.inf      # Y upper bound
+        self.ubx[2: self.n_states*(self.N+1): self.n_states] = ca.inf      # theta upper bound
+        self.ubx[3: self.n_states*(self.N+1): self.n_states] = v_max       # VX upper bound
+        self.ubx[4: self.n_states*(self.N+1): self.n_states] = v_max       # VY upper bound
+        self.ubx[5: self.n_states*(self.N+1): self.n_states] = omega_max   # omega upper bound
 
-ubx[n_states*(N+1)::2] = F_max                  # v upper bound for all V
-ubx[n_states*(N+1)+1::2] = tau_max                  # v upper bound for all V
+        self.lbx[self.n_states*(self.N+1)::self.n_controls] = F_min        # force lower bound
+        self.lbx[self.n_states*(self.N+1)+1::self.n_controls] = tau_min    # tau lower bound 
+
+        self.ubx[self.n_states*(self.N+1)::self.n_controls] = F_max        # force upper bound
+        self.ubx[self.n_states*(self.N+1)+1::self.n_controls] = tau_max    # tau upper bound 
+
+        self.args_no_obs = {
+            'lbg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints lower bound
+            'ubg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints upper bound
+            'lbx': self.lbx,
+            'ubx': self.ubx
+        }
 
 
-args = {
-    'lbg': ca.DM.zeros((n_states*(N+1), 1)),  # constraints lower bound
-    'ubg': ca.DM.zeros((n_states*(N+1), 1)),  # constraints upper bound
-    'lbx': lbx,
-    'ubx': ubx
-}
+
+    def get_solver(self, obstacles=None):
+        # matrix containing all states over all time steps +1 (each column is a state vector)
+        X = ca.SX.sym('X', self.n_states, self.N + 1)
+
+        # matrix containing all control actions over all time steps (each column is an action vector)
+        U = ca.SX.sym('U', self.n_controls, self.N)
+
+        OPT_variables = ca.vertcat(
+            X.reshape((-1, 1)),   # Example: 3x11 ---> 33x1 where 3=states, 11=N+1
+            U.reshape((-1, 1))
+        )
+
+        # coloumn vector for storing initial state and reference trajectory
+        P = ca.SX.sym('P', self.n_states + self.N*self.n_states)
+        
+        cost_fn = 0  # cost function
+        g = X[:, 0] - P[:self.n_states]  # constraints in the equation
+
+        
+        n = self.n_states
+        for k in range(self.N):
+            st = X[:, k]
+            con = U[:, k]
+            ref_k = P[(k+1)*n:(k+2)*n]
+            cost_fn = cost_fn \
+                + (st - ref_k).T @ self.Q @ (st - ref_k) \
+                + con.T @ self.R @ con
+            st_next = X[:, k+1]
+            k1 = self.f(st, con)
+            k2 = self.f(st + self.dt/2*k1, con)
+            k3 = self.f(st + self.dt/2*k2, con)
+            k4 = self.f(st + self.dt * k3, con)
+            st_next_RK4 = st + (self.dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+            g = ca.vertcat(g, st_next - st_next_RK4)
+            
+            fx = ca.vertcat(st[3], st[4], st[5], 0, 0, 0)
+            gx = ca.vertcat(
+                    ca.horzcat(0,  0),
+                    ca.horzcat(0,  0),
+                    ca.horzcat(0,  0),
+                    ca.horzcat(cos(st[2])/self.mass, 0),
+                    ca.horzcat(sin(st[2])/self.mass,  0),
+                    ca.horzcat(0,  1/self.I0)
+                )
+
+            for obstacle in obstacles:
+                gr_h_obs = grad_h_obs(st, obstacle, self.alpha)
+                h_ob = h_obs(st, obstacle, self.r, self.alpha)
+                g = ca.vertcat(g, gr_h_obs @ (fx + gx @ con) + self.alpha*h_ob)
+
+        nlp_prob = {
+            'f': cost_fn,
+            'x': OPT_variables,
+            'g': g,
+            'p': P
+        }
+
+        solver = ca.nlpsol('solver', 'ipopt', nlp_prob, self.opts)
+
+        ubg = ca.DM.zeros((self.n_states*(self.N+1)+len(obstacles)*self.N, 1))
+
+        ubg[0:2*n] = 0
+        for o in range(len(obstacles)):
+            ubg[2*n + o::len(obstacles)+n] = ca.inf
+            
+        args = {
+            'lbg': ca.DM.zeros((self.n_states*(self.N+1)+len(obstacles)*self.N, 1)),        # constraints lower bound
+            'ubg': ubg,        # constraints upper bound
+            'lbx': self.lbx,
+            'ubx': self.ubx
+        }
+
+        return solver, args
+
+    def update_args(self, args, X0, u0, state_init, ref, k):
+        args['p'] = get_p_arg(state_init, ref, self.v_target, k, self.N)
+
+        # optimization variable current state
+        args['x0'] = ca.vertcat(
+            ca.reshape(X0, self.n_states*(self.N+1), 1),
+            ca.reshape(u0, self.n_controls*self.N, 1)
+        )
+
+        return args
+
+    def get_solution(self, X0, u0, state_init, ref, k, obstacles=None):
+        if obstacles:
+            solver, args = self.get_solver(obstacles)
+        else:
+            solver = self.solver_no_obs
+            args = self.args_no_obs
+
+        args = self.update_args(args, X0, u0, state_init, ref, k)
+        # print('solving...')
+        sol = solver(
+            x0=args['x0'],
+            lbx=args['lbx'],
+            ubx=args['ubx'],
+            lbg=args['lbg'],
+            ubg=args['ubg'],
+            p=args['p']
+        )
+        # print('got solution')
+        return sol

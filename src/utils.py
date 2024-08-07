@@ -1,34 +1,28 @@
 import numpy as np
 
-def parametric_circle(t,c,r):
+def parametric_circle(th,c,r):
     xc, yc = c
-    x = xc + r*np.cos(t)
-    y = yc + r*np.sin(t)
+    x = xc + r*np.cos(th)
+    y = yc + r*np.sin(th)
     return x, y
 
 def inv_parametric_circle(p,c,r):
     x, y = p
     xc, yc = c
-    if y - yc >= 0 and x - xc >= 0:
-        t = np.arccos((x-xc)/r)
-    
-    elif y - yc >= 0 and x - xc < 0:
-        t = np.arccos((x-xc)/r)
-    
-    elif y - yc < 0 and x - xc >= 0:
-        t = np.arcsin((y-yc)/r)
-
-    elif y - yc < 0 and x - xc < 0:
-        t = -np.arccos((x-xc)/r)
-
-    return t
+    return np.arctan2((y - yc)/r, (x-xc)/r)
 
 def gen_arc(numpoints, c, r, start, end):
-    start_t = inv_parametric_circle(start, c, r)
-    end_t   = inv_parametric_circle(end, c, r)
+    start_th = inv_parametric_circle(start, c, r)
+    end_th   = inv_parametric_circle(end, c, r)
 
-    arc_T = np.linspace(start_t, end_t, numpoints)
-    X,Y = parametric_circle(arc_T, c, r)
+    if end_th - start_th > np.pi:
+        end_th -= 2*np.pi
+
+    elif end_th - start_th < -np.pi:
+        end_th += 2*np.pi
+
+    arc_T = np.linspace(start_th, end_th, numpoints)
+    X, Y = parametric_circle(arc_T, c, r)
 
     return X, Y
 

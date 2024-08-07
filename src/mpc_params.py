@@ -14,6 +14,7 @@ R2 = 1000
 
 dt = .1   # time between steps in seconds
 N = 60              # number of look ahead steps
+# N = 3
 
 v_target = 3    # m/s
 
@@ -27,6 +28,9 @@ vx_min = -10
 vy_min = -10
 vx_max = 10
 vy_max = 10
+
+v_min = -10
+v_max = 10
 
 omega_min = -.5
 omega_max = .5

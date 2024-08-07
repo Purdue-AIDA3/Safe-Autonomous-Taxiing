@@ -2,6 +2,7 @@ import casadi as ca
 import numpy as np
 import src.mpc_params as mpc_params
 import src.mpc_casadi as mpc
+from src.mpc_casadi import MPC_CBF
 
 from time import time
 from src.animation_code import simulate
@@ -31,13 +32,23 @@ if __name__ == '__main__':
 
     x_init = ref[0,0]
     y_init = ref[0,1]
-    theta_init = np.arctan2(ref[1, 1] - y_init, ref[1,0] - x_init)
+    theta_init = ref[0,2]
     state_init = ca.DM([x_init, y_init, theta_init, 0, 0, 0])        # initial state
 
     t0 = 0
     t = ca.DM(t0)
 
-    u0 = ca.DM.zeros((mpc.n_controls, mpc_params.N))      # initial control
+    Q_params = [mpc_params.Q_x, mpc_params.Q_y, mpc_params.Q_theta, mpc_params.Q_vx, mpc_params.Q_vx, mpc_params.Q_omega]
+    R_params = [mpc_params.R1, mpc_params.R2]
+    F_lims = [mpc_params.F_min, mpc_params.F_max]
+    tau_lims = [mpc_params.tau_min, mpc_params.tau_max]
+    v_lims = [mpc_params.v_min, mpc_params.v_max]
+    omega_lims = [mpc_params.omega_min, mpc_params.omega_max]
+
+    mpc_cbf = MPC_CBF(Q_params, R_params, F_lims, tau_lims, v_lims, omega_lims, 
+                      mpc_params.N, mpc_params.mass, mpc_params.I0)
+
+    u0 = ca.DM.zeros((mpc_cbf.n_controls, mpc_params.N))      # initial control
     X0 = ca.repmat(state_init, 1, mpc_params.N+1)         # initial state full
 
     mpc_iter = 0
@@ -46,28 +57,14 @@ if __name__ == '__main__':
     times = np.array([[0]])
     
     main_loop = time()  # return time in sec
+    obstacles = None # This simulation assumes there are no obstacles; a simulation that incorporates an obstacle event will be developed later
     for k in range(len(ref)):
         t1 = time()
-        
-        mpc.args['p'] = mpc.get_p_arg(state_init, ref, k)
 
-        # optimization variable current state
-        mpc.args['x0'] = ca.vertcat(
-            ca.reshape(X0, mpc.n_states*(mpc_params.N+1), 1),
-            ca.reshape(u0, mpc.n_controls*mpc_params.N, 1)
-        )
+        sol = mpc_cbf.get_solution(X0, u0, state_init, ref, k, obstacles)
 
-        sol = mpc.solver(
-            x0=mpc.args['x0'],
-            lbx=mpc.args['lbx'],
-            ubx=mpc.args['ubx'],
-            lbg=mpc.args['lbg'],
-            ubg=mpc.args['ubg'],
-            p=mpc.args['p']
-        )
-
-        u = ca.reshape(sol['x'][mpc.n_states * (mpc_params.N + 1):], mpc.n_controls, mpc_params.N)
-        X0 = ca.reshape(sol['x'][: mpc.n_states * (mpc_params.N + 1)], mpc.n_states, mpc_params.N+1)
+        u = ca.reshape(sol['x'][mpc_cbf.n_states * (mpc_cbf.N + 1):], mpc_cbf.n_controls, mpc_cbf.N)
+        X0 = ca.reshape(sol['x'][: mpc_cbf.n_states * (mpc_cbf.N + 1)], mpc_cbf.n_states, mpc_cbf.N+1)
         
         cat_states = np.dstack((
             cat_states,
@@ -80,7 +77,7 @@ if __name__ == '__main__':
         ))
         t = np.vstack((t,t0))
 
-        t0, state_init, u0 = mpc.shift_timestep(mpc_params.dt, t0, state_init, u, mpc.f)
+        t0, state_init, u0 = mpc.shift_timestep(mpc_params.dt, t0, state_init, u, mpc_cbf.f)
 
         X0 = ca.horzcat(
             X0[:, 1:],
