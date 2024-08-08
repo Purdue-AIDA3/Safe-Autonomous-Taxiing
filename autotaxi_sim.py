@@ -45,8 +45,13 @@ if __name__ == '__main__':
     v_lims = [mpc_params.v_min, mpc_params.v_max]
     omega_lims = [mpc_params.omega_min, mpc_params.omega_max]
 
-    mpc_cbf = MPC_CBF(Q_params, R_params, F_lims, tau_lims, v_lims, omega_lims, 
-                      mpc_params.N, mpc_params.mass, mpc_params.I0)
+    r = 1 # Safety radius
+    alpha = 10 # Parameter for scalar class-K function, must be positive
+
+    mpc_cbf = MPC_CBF(mpc_params.dt, mpc_params.v_target, 
+                      Q_params, R_params, 
+                      F_lims, tau_lims, v_lims, omega_lims,
+                      mpc_params.N, mpc_params.mass, mpc_params.I0, r, alpha)
 
     u0 = ca.DM.zeros((mpc_cbf.n_controls, mpc_params.N))      # initial control
     X0 = ca.repmat(state_init, 1, mpc_params.N+1)         # initial state full
