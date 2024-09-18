@@ -42,13 +42,35 @@ def grad_h_obs(state, obstacle, alpha):
     ox, oy = obstacle
     return 2*ca.horzcat(state[3]+alpha*(state[0]-ox), state[4]+alpha*(state[1]-oy), 0, state[0] - ox, state[1] - oy, 0)
 
+def h_ref(state, ref, w, v_target, alpha):
+    x, y, vx, vy = state[0], state[1], state[3], state[4]
+    
+    x_ref, y_ref, theta_ref = ref[0], ref[1], ref[2]
+    vx_ref, vy_ref = v_target*cos(theta_ref), v_target*sin(theta_ref)
+
+    h0 = w**2 - ((x - x_ref)**2 + (y - y_ref)**2)
+    h0_dot = 2*((x - x_ref)*(vx_ref - vx) + (y - y_ref)*(vy_ref - vy))
+
+    return h0_dot + alpha*h0
+
+def h_ref_dot(state, control, ref, ref_next, v_target, dt, mass):
+    x, y, theta, vx, vy = state[0], state[1], state[2], state[3], state[4]
+    
+    x_ref, y_ref, theta_ref = ref[0], ref[1], ref[2]
+    vx_ref, vy_ref = v_target*cos(theta_ref), v_target*sin(theta_ref)
+    omega_ref = (ref_next[2] - ref[2])/dt
+    ax_ref, ay_ref = -v_target*omega_ref*sin(theta_ref), v_target*omega_ref*cos(theta_ref)
+
+    return 2*(-((vx_ref - vx)**2 + (vy_ref - vy)**2) 
+              +((x - x_ref)*(ax_ref - control[0]*cos(theta)/mass) 
+                +(y - y_ref)*(ay_ref - control[0]*sin(theta)/mass)))
 
 
 class MPC_CBF:
     def __init__(self, dt, v_target, 
                  Q_params, R_params, 
                  F_lims, tau_lims, v_lims, omega_lims, 
-                 N, mass, I0, r, alpha):
+                 N, mass, I0, r, w, alpha):
         self.dt = dt
         self.v_target = v_target
 
@@ -56,6 +78,7 @@ class MPC_CBF:
         self.I0 = I0
         self.N = N # MPC time window length
         self.r = r # Safety radius
+        self.w = w # Trajectory tracking radius
         self.alpha = alpha # Class-K function parameter, must be positive
         
         self.F_lims = F_lims
@@ -138,6 +161,12 @@ class MPC_CBF:
             st = X[:, k]
             con = U[:, k]
             ref_k = P[(k+1)*n:(k+2)*n]
+
+            if k != self.N-1:
+                ref_k_next = P[(k+2)*n:(k+3)*n]
+            else:
+                ref_k_next = ref_k
+            
             cost_fn = cost_fn \
                 + (st - ref_k).T @ self.Q @ (st - ref_k) \
                 + con.T @ self.R @ con
@@ -148,6 +177,9 @@ class MPC_CBF:
             k4 = self.f(st + dt * k3, con)
             st_next_RK4 = st + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
             g = ca.vertcat(g, st_next - st_next_RK4)
+            # Runway safety condition
+            g = ca.vertcat(g, h_ref_dot(st, con, ref_k, ref_k_next, self.v_target, self.dt, self.mass) 
+                              + self.alpha*h_ref(st, ref_k, self.w, self.v_target, self.alpha))
 
 
         nlp_prob = {
@@ -186,14 +218,29 @@ class MPC_CBF:
         self.lbx[self.n_states*(self.N+1)+1::self.n_controls] = tau_min    # tau lower bound 
 
         self.ubx[self.n_states*(self.N+1)::self.n_controls] = F_max        # force upper bound
-        self.ubx[self.n_states*(self.N+1)+1::self.n_controls] = tau_max    # tau upper bound 
+        self.ubx[self.n_states*(self.N+1)+1::self.n_controls] = tau_max    # tau upper bound
+
+        ubg = ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1))
+
+        # ubg = ca.DM.zeros((self.n_states*(self.N+1), 1))
+
+        ubg[0:2*n] = 0
+        
+        ubg[2*n ::n+1] = ca.inf 
 
         self.args_no_obs = {
-            'lbg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints lower bound
-            'ubg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints upper bound
+            'lbg': ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1)),        # constraints lower bound
+            'ubg': ubg,        # constraints upper bound
             'lbx': self.lbx,
             'ubx': self.ubx
         }
+
+        # self.args_no_obs = {
+        #     'lbg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints lower bound
+        #     'ubg': ubg,        # constraints upper bound
+        #     'lbx': self.lbx,
+        #     'ubx': self.ubx
+        # }
 
 
 
@@ -221,6 +268,12 @@ class MPC_CBF:
             st = X[:, k]
             con = U[:, k]
             ref_k = P[(k+1)*n:(k+2)*n]
+
+            if k != self.N-1:
+                ref_k_next = P[(k+2)*n:(k+3)*n]
+            else:
+                ref_k_next = ref_k
+            
             cost_fn = cost_fn \
                 + (st - ref_k).T @ self.Q @ (st - ref_k) \
                 + con.T @ self.R @ con
@@ -231,6 +284,9 @@ class MPC_CBF:
             k4 = self.f(st + self.dt * k3, con)
             st_next_RK4 = st + (self.dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
             g = ca.vertcat(g, st_next - st_next_RK4)
+            # Runway safety condition
+            g = ca.vertcat(g, h_ref_dot(st, con, ref_k, ref_k_next, self.v_target, self.dt, self.mass) 
+                           + self.alpha*h_ref(st, ref_k, self.w, self.v_target, self.alpha))
             
             fx = ca.vertcat(st[3], st[4], st[5], 0, 0, 0)
             gx = ca.vertcat(
@@ -255,15 +311,15 @@ class MPC_CBF:
         }
 
         solver = ca.nlpsol('solver', 'ipopt', nlp_prob, self.opts)
-
-        ubg = ca.DM.zeros((self.n_states*(self.N+1)+len(obstacles)*self.N, 1))
+        # the len(obstacles)+1 is to account for each obstacle condition plus the runway condition
+        ubg = ca.DM.zeros((self.n_states*(self.N+1)+(len(obstacles)+1)*self.N, 1))
 
         ubg[0:2*n] = 0
-        for o in range(len(obstacles)):
-            ubg[2*n + o::len(obstacles)+n] = ca.inf
+        for o in range(len(obstacles)+1):
+            ubg[2*n + o::(len(obstacles)+1)+n] = ca.inf
             
         args = {
-            'lbg': ca.DM.zeros((self.n_states*(self.N+1)+len(obstacles)*self.N, 1)),        # constraints lower bound
+            'lbg': ca.DM.zeros((self.n_states*(self.N+1)+(len(obstacles)+1)*self.N, 1)),        # constraints lower bound
             'ubg': ubg,        # constraints upper bound
             'lbx': self.lbx,
             'ubx': self.ubx

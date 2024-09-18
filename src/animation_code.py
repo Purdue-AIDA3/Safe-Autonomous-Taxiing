@@ -6,7 +6,7 @@ from matplotlib import animation
 from time import time
 
 
-def simulate(ref, cat_states, cat_controls, t, step_horizon, N, reference, image_path, save=False):
+def simulate(ref, cat_states, cat_controls, t, step_horizon, N, runway_w, reference, image_path, save=False):
     def create_triangle(state=[0,0,0], h=40, w=20, update=False):
         x, y, th = state
         triangle = np.array([
@@ -76,6 +76,8 @@ def simulate(ref, cat_states, cat_controls, t, step_horizon, N, reference, image
     ax.set_aspect('equal')
 
     ax.plot(ref[:,0], ref[:,1], 'r--', linewidth=2)
+    for i in range(len(ref)):
+        ax.add_patch(plt.Circle((ref[i,0], ref[i,1]), runway_w, color='g', alpha=0.001))
     plt.imshow(image)
 
     # plt.tight_layout()
