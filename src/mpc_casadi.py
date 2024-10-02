@@ -3,8 +3,12 @@ import numpy as np
  
 from casadi import sin, cos
 
-def shift_timestep(step_horizon, t0, state_init, u, f):
-    f_value = f(state_init, u[:, 0])
+def shift_timestep(step_horizon, t0, state_init, u, f, crosswind=None):
+    if crosswind is None:
+        f_value = f(state_init, u[:, 0])
+    else:
+        f_value = f(state_init, u[:, 0]) + ca.vertcat(0, 0, 0, crosswind[0], crosswind[1], 0)
+    
     next_state = ca.DM.full(state_init + (step_horizon * f_value))
 
     t0 = t0 + step_horizon
@@ -70,7 +74,7 @@ class MPC_CBF:
     def __init__(self, dt, v_target, 
                  Q_params, R_params, 
                  F_lims, tau_lims, v_lims, omega_lims, 
-                 N, mass, I0, r, w, alpha):
+                 N, mass, I0, r, w, alpha, safe_ref=True):
         self.dt = dt
         self.v_target = v_target
 
@@ -119,7 +123,8 @@ class MPC_CBF:
                 ca.horzcat(0,  1/self.I0)
             )
         
-        drift = ca.vertcat(vx, vy, omega, 0, 0, 0)
+        friction = 0.3
+        drift = ca.vertcat(vx, vy, omega, -vx*friction/self.mass, -vy*friction/self.mass, 0)
 
         RHS = drift + rot @ controls
 
@@ -178,8 +183,9 @@ class MPC_CBF:
             st_next_RK4 = st + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
             g = ca.vertcat(g, st_next - st_next_RK4)
             # Runway safety condition
-            g = ca.vertcat(g, h_ref_dot(st, con, ref_k, ref_k_next, self.v_target, self.dt, self.mass) 
-                              + self.alpha*h_ref(st, ref_k, self.w, self.v_target, self.alpha))
+            if safe_ref:
+                g = ca.vertcat(g, h_ref_dot(st, con, ref_k, ref_k_next, self.v_target, self.dt, self.mass) 
+                                + self.alpha*h_ref(st, ref_k, self.w, self.v_target, self.alpha))
 
 
         nlp_prob = {
@@ -220,27 +226,27 @@ class MPC_CBF:
         self.ubx[self.n_states*(self.N+1)::self.n_controls] = F_max        # force upper bound
         self.ubx[self.n_states*(self.N+1)+1::self.n_controls] = tau_max    # tau upper bound
 
-        ubg = ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1))
+        if safe_ref:
+            ubg = ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1))
 
-        # ubg = ca.DM.zeros((self.n_states*(self.N+1), 1))
+            ubg[0:2*n] = 0
+            
+            ubg[2*n ::n+1] = ca.inf 
+            # ubg[2*n ::n+1] = 0 
 
-        ubg[0:2*n] = 0
-        
-        ubg[2*n ::n+1] = ca.inf 
-
-        self.args_no_obs = {
-            'lbg': ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1)),        # constraints lower bound
-            'ubg': ubg,        # constraints upper bound
-            'lbx': self.lbx,
-            'ubx': self.ubx
-        }
-
-        # self.args_no_obs = {
-        #     'lbg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints lower bound
-        #     'ubg': ubg,        # constraints upper bound
-        #     'lbx': self.lbx,
-        #     'ubx': self.ubx
-        # }
+            self.args_no_obs = {
+                'lbg': ca.DM.zeros((self.n_states*(self.N+1)+self.N, 1)),        # constraints lower bound
+                'ubg': ubg,        # constraints upper bound
+                'lbx': self.lbx,
+                'ubx': self.ubx
+            }
+        else:
+            self.args_no_obs = {
+                'lbg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints lower bound
+                'ubg': ca.DM.zeros((self.n_states*(self.N+1), 1)),        # constraints upper bound
+                'lbx': self.lbx,
+                'ubx': self.ubx
+            }
 
 
 

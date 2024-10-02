@@ -6,7 +6,9 @@ from matplotlib import animation
 from time import time
 
 
-def simulate(ref, cat_states, cat_controls, t, step_horizon, N, runway_w, reference, image_path, save=False):
+def simulate(ref, cat_states, obstacles, r, 
+             t, step_horizon, runway_w, 
+             reference, image_path, save=False):
     def create_triangle(state=[0,0,0], h=40, w=20, update=False):
         x, y, th = state
         triangle = np.array([
@@ -27,7 +29,6 @@ def simulate(ref, cat_states, cat_controls, t, step_horizon, N, runway_w, refere
             return coords[:3, :]
 
     def init():
-        # return path, horizon, current_state, target_state,
         return path, current_state, target_state,
 
     def animate(i):
@@ -46,16 +47,10 @@ def simulate(ref, cat_states, cat_controls, t, step_horizon, N, runway_w, refere
         # update horizon
         x_new = cat_states[0, :, i]
         y_new = cat_states[1, :, i]
-        # horizon.set_data(x_new, y_new)
 
         # update current_state
         current_state.set_xy(create_triangle([x, y, th], update=True))
 
-        # update target_state
-        # xy = target_state.get_xy()
-        # target_state.set_xy(xy)            
-
-        # return path, horizon, current_state, target_state,
         return path, current_state, target_state,
 
     image_raw = mpimg.imread(image_path)  # Load the airport map image
@@ -63,21 +58,17 @@ def simulate(ref, cat_states, cat_controls, t, step_horizon, N, runway_w, refere
     
     # create figure and axes
     fig, ax = plt.subplots(figsize=(12, 4))
-    # fig, ax = plt.subplots()
     fig.tight_layout()
 
-    # min_scale = min(reference[0], reference[1], reference[3], reference[4]) - 4
-    # max_scale = max(reference[0], reference[1], reference[3], reference[4]) + 4
-    # ax.set_xlim(left = min_scale, right = max_scale)
-    # ax.set_ylim(bottom = min_scale, top = max_scale)
-
-    # ax.set_xlim(left = 0, right = 1400)
-    # ax.set_ylim(bottom = 475, top = 680)
     ax.set_aspect('equal')
 
     ax.plot(ref[:,0], ref[:,1], 'r--', linewidth=2)
     for i in range(len(ref)):
-        ax.add_patch(plt.Circle((ref[i,0], ref[i,1]), runway_w, color='g', alpha=0.001))
+        ax.add_patch(plt.Circle((ref[i,0], ref[i,1]), runway_w, color='g', alpha=0.01))
+
+    for obs in obstacles:
+        ax.add_patch(plt.Circle(obs, r, color='r', alpha=0.5))
+    
     plt.imshow(image)
 
     # plt.tight_layout()

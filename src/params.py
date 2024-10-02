@@ -18,8 +18,8 @@ N = 60              # number of look ahead steps
 
 v_target = 3    # m/s
 
-F_max = 2       # Netwons
-F_min = -2
+F_max = 3       # Netwons
+F_min = -3
 
 tau_max = 10    # Torque
 tau_min = -10
